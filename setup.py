@@ -54,7 +54,8 @@ install_requires = [
     'pyzmq==19.0.*',
     'psutil>=5.6.0',
     'urwid==2.*',
-    'packaging'
+    'packaging',
+    'sqlalchemy==1.3.*'
 ]
 tests_require = [
     'async-timeout>=3.0.0',
