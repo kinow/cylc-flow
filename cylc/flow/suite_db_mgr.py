@@ -29,11 +29,12 @@ import packaging.version
 from shutil import copy, rmtree
 from tempfile import mkstemp
 
+from sqlalchemy import Table
 
 from cylc.flow import LOG
-from cylc.flow.broadcast_report import get_broadcast_change_iter
-from cylc.flow.rundb import CylcSuiteDAO
 from cylc.flow import __version__ as CYLC_VERSION
+from cylc.flow.broadcast_report import get_broadcast_change_iter
+from cylc.flow.rundb import *
 from cylc.flow.wallclock import get_current_time_string, get_utc_mode
 from cylc.flow.exceptions import SuiteServiceFileError
 
@@ -62,19 +63,22 @@ class SuiteDatabaseManager:
     KEY_CYCLE_POINT_TIME_ZONE = 'cycle_point_tz'
     KEY_RESTART_COUNT = 'n_restart'
 
-    TABLE_BROADCAST_EVENTS = CylcSuiteDAO.TABLE_BROADCAST_EVENTS
-    TABLE_BROADCAST_STATES = CylcSuiteDAO.TABLE_BROADCAST_STATES
-    TABLE_INHERITANCE = CylcSuiteDAO.TABLE_INHERITANCE
-    TABLE_SUITE_PARAMS = CylcSuiteDAO.TABLE_SUITE_PARAMS
-    TABLE_SUITE_TEMPLATE_VARS = CylcSuiteDAO.TABLE_SUITE_TEMPLATE_VARS
-    TABLE_TASK_ACTION_TIMERS = CylcSuiteDAO.TABLE_TASK_ACTION_TIMERS
-    TABLE_TASK_POOL = CylcSuiteDAO.TABLE_TASK_POOL
-    TABLE_TASK_OUTPUTS = CylcSuiteDAO.TABLE_TASK_OUTPUTS
-    TABLE_TASK_STATES = CylcSuiteDAO.TABLE_TASK_STATES
-    TABLE_TASK_PREREQUISITES = CylcSuiteDAO.TABLE_TASK_PREREQUISITES
-    TABLE_TASK_TIMEOUT_TIMERS = CylcSuiteDAO.TABLE_TASK_TIMEOUT_TIMERS
-    TABLE_XTRIGGERS = CylcSuiteDAO.TABLE_XTRIGGERS
-    TABLE_ABS_OUTPUTS = CylcSuiteDAO.TABLE_ABS_OUTPUTS
+    TABLE_BROADCAST_EVENTS: Table = broadcast_events
+    TABLE_BROADCAST_STATES: Table = broadcast_states
+    TABLE_INHERITANCE: Table = inheritance
+    TABLE_SUITE_PARAMS: Table = suite_params
+    TABLE_SUITE_TEMPLATE_VARS: Table = suite_template_vars
+    TABLE_TASK_ACTION_TIMERS: Table = task_action_timers
+    TABLE_TASK_EVENTS: Table = task_events
+    TABLE_TASK_POOL: Table = task_pool
+    TABLE_TASK_JOBS: Table = task_jobs
+    TABLE_TASK_OUTPUTS: Table = task_outputs
+    TABLE_TASK_STATES: Table = task_states
+    TABLE_TASK_PREREQUISITES: Table = task_prerequisites
+    TABLE_TASK_TIMEOUT_TIMERS: Table = task_timeout_timers
+    TABLE_TASK_LATE_FLAGS: Table = task_late_flags
+    TABLE_XTRIGGERS: Table = xtriggers
+    TABLE_ABS_OUTPUTS: Table = abs_outputs
 
     def __init__(self, pri_d=None, pub_d=None):
         self.pri_path = None
@@ -187,9 +191,10 @@ class SuiteDatabaseManager:
                 # Just in case the path is a directory!
                 rmtree(self.pri_path, ignore_errors=True)
         self.pri_dao = self.get_pri_dao()
-        os.chmod(self.pri_path, 0o600)
-        self.pub_dao = CylcSuiteDAO(self.pub_path, is_public=True)
-        self.copy_pri_to_pub()
+        if self.pri_dao.is_sqlite():
+            os.chmod(self.pri_path, 0o600)
+            self.pub_dao = CylcSuiteDAO(self.pub_path, is_public=True)
+            self.copy_pri_to_pub()
 
     def on_suite_shutdown(self):
         """Close data access objects."""
@@ -207,29 +212,29 @@ class SuiteDatabaseManager:
         # Record suite parameters and tasks in pool
         # Record any broadcast settings to be dumped out
         if any(self.db_deletes_map.values()):
-            for table_name, db_deletes in sorted(
-                    self.db_deletes_map.items()):
+            for table, db_deletes in self.db_deletes_map.items():
                 while db_deletes:
                     where_args = db_deletes.pop(0)
-                    self.pri_dao.add_delete_item(table_name, where_args)
-                    self.pub_dao.add_delete_item(table_name, where_args)
+                    self.pri_dao.add_delete_item(table, where_args)
+                    if self.pub_dao:
+                        self.pub_dao.add_delete_item(table, where_args)
         if any(self.db_inserts_map.values()):
-            for table_name, db_inserts in sorted(
-                    self.db_inserts_map.items()):
+            for table, db_inserts in self.db_inserts_map.items():
                 while db_inserts:
                     db_insert = db_inserts.pop(0)
-                    self.pri_dao.add_insert_item(table_name, db_insert)
-                    self.pub_dao.add_insert_item(table_name, db_insert)
+                    self.pri_dao.add_insert_item(table, db_insert)
+                    if self.pub_dao:
+                        self.pub_dao.add_insert_item(table, db_insert)
         if (hasattr(self, 'db_updates_map') and
                 any(self.db_updates_map.values())):
-            for table_name, db_updates in sorted(
-                    self.db_updates_map.items()):
+            for table, db_updates in self.db_updates_map.items():
                 while db_updates:
                     set_args, where_args = db_updates.pop(0)
                     self.pri_dao.add_update_item(
-                        table_name, set_args, where_args)
-                    self.pub_dao.add_update_item(
-                        table_name, set_args, where_args)
+                        table, set_args, where_args)
+                    if self.pub_dao:
+                        self.pub_dao.add_update_item(
+                            table, set_args, where_args)
 
         # Previously, we used a separate thread for database writes. This has
         # now been removed. For the private database, there is no real
@@ -240,7 +245,8 @@ class SuiteDatabaseManager:
         # there is no evidence that this is a bottleneck, so it is better to
         # keep the logic simple.
         self.pri_dao.execute_queued_items()
-        self.pub_dao.execute_queued_items()
+        if self.pub_dao:
+            self.pub_dao.execute_queued_items()
 
     def put_broadcast(self, modified_settings, is_cancel=False):
         """Put or clear broadcasts in runtime database."""
@@ -476,21 +482,21 @@ class SuiteDatabaseManager:
 
     def put_insert_task_events(self, itask, args):
         """Put INSERT statement for task_events table."""
-        self._put_insert_task_x(CylcSuiteDAO.TABLE_TASK_EVENTS, itask, args)
+        self._put_insert_task_x(self.TABLE_TASK_EVENTS, itask, args)
 
     def put_insert_task_late_flags(self, itask):
         """If itask is late, put INSERT statement to task_late_flags table."""
         if itask.is_late:
             self._put_insert_task_x(
-                CylcSuiteDAO.TABLE_TASK_LATE_FLAGS, itask, {"value": True})
+                self.TABLE_TASK_LATE_FLAGS, itask, {"value": True})
 
     def put_insert_task_jobs(self, itask, args):
         """Put INSERT statement for task_jobs table."""
-        self._put_insert_task_x(CylcSuiteDAO.TABLE_TASK_JOBS, itask, args)
+        self._put_insert_task_x(self.TABLE_TASK_JOBS, itask, args)
 
     def put_insert_task_states(self, itask, args):
         """Put INSERT statement for task_states table."""
-        self._put_insert_task_x(CylcSuiteDAO.TABLE_TASK_STATES, itask, args)
+        self._put_insert_task_x(self.TABLE_TASK_STATES, itask, args)
 
     def put_insert_task_prerequisites(self, itask, args):
         """Put INSERT statement for task_prerequisites table."""
@@ -498,7 +504,7 @@ class SuiteDatabaseManager:
 
     def put_insert_task_outputs(self, itask):
         """Reset custom outputs for a task."""
-        self._put_insert_task_x(CylcSuiteDAO.TABLE_TASK_OUTPUTS, itask, {})
+        self._put_insert_task_x(self.TABLE_TASK_OUTPUTS, itask, {})
 
     def put_insert_abs_output(self, cycle, name, output):
         """Put INSERT statement for a new abs output."""
@@ -507,23 +513,24 @@ class SuiteDatabaseManager:
             "name": name,
             "output": output
         }
-        self.db_inserts_map.setdefault(CylcSuiteDAO.TABLE_ABS_OUTPUTS, [])
-        self.db_inserts_map[CylcSuiteDAO.TABLE_ABS_OUTPUTS].append(args)
+        self.db_inserts_map.setdefault(self.TABLE_ABS_OUTPUTS, [])
+        self.db_inserts_map[self.TABLE_ABS_OUTPUTS].append(args)
 
-    def _put_insert_task_x(self, table_name, itask, args):
+    def _put_insert_task_x(self, table, itask, args):
         """Put INSERT statement for a task_* table."""
         args.update({
             "name": itask.tdef.name,
             "cycle": str(itask.point)})
-        if "submit_num" not in args:
+        if "submit_num" not in args and \
+                "submit_num" in [column.name for column in table.columns]:
             args["submit_num"] = itask.submit_num
-        self.db_inserts_map.setdefault(table_name, [])
-        self.db_inserts_map[table_name].append(args)
+        self.db_inserts_map.setdefault(table, [])
+        self.db_inserts_map[table].append(args)
 
     def put_update_task_jobs(self, itask, set_args):
         """Put UPDATE statement for task_jobs table."""
         self._put_update_task_x(
-            CylcSuiteDAO.TABLE_TASK_JOBS, itask, set_args)
+            self.TABLE_TASK_JOBS, itask, set_args)
 
     def put_update_task_outputs(self, itask):
         """Put UPDATE statement for task_outputs table."""
@@ -531,10 +538,10 @@ class SuiteDatabaseManager:
         for trigger, message in itask.state.outputs.get_completed_customs():
             items[trigger] = message
         self._put_update_task_x(
-            CylcSuiteDAO.TABLE_TASK_OUTPUTS,
+            self.TABLE_TASK_OUTPUTS,
             itask, {"outputs": json.dumps(items)})
 
-    def _put_update_task_x(self, table_name, itask, set_args):
+    def _put_update_task_x(self, table, itask, set_args):
         """Put UPDATE statement for a task_* table."""
         where_args = {
             "cycle": str(itask.point),
@@ -543,8 +550,8 @@ class SuiteDatabaseManager:
             where_args["submit_num"] = itask.submit_num
         if "flow_label" not in set_args:
             where_args["flow_label"] = itask.flow_label
-        self.db_updates_map.setdefault(table_name, [])
-        self.db_updates_map[table_name].append((set_args, where_args))
+        self.db_updates_map.setdefault(table, [])
+        self.db_updates_map[table].append((set_args, where_args))
 
     def recover_pub_from_pri(self):
         """Recover public database from private database."""
@@ -603,3 +610,8 @@ class SuiteDatabaseManager:
         if last_run_ver <= restart_incompat_ver:
             raise SuiteServiceFileError(
                 f"{incompat_msg} (workflow last run with Cylc {last_run_ver})")
+
+    def is_sqlite(self):
+        if not self.pri_dao:
+            return False
+        return self.pri_dao.is_sqlite()

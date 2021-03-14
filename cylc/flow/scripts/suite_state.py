@@ -50,7 +50,7 @@ Examples:
 """
 
 import os
-import sqlite3
+from sqlalchemy.exc import SQLAlchemyError
 import sys
 from time import sleep
 
@@ -96,7 +96,7 @@ class SuitePoller(Poller):
                 connected = True
                 # ... but ensure at least one poll after connection:
                 self.n_polls -= 1
-            except (OSError, sqlite3.Error):
+            except (OSError, SQLAlchemyError):
                 if self.n_polls >= max_polls:
                     raise
                 if cylc.flow.flags.verbose:
