@@ -1945,6 +1945,7 @@ class Pruned(ObjectType):
     tasks = List(String, default_value=[])
     task_proxies = List(String, default_value=[])
     edges = List(String, default_value=[])
+    workflows = List(String, default_value=[])
 
 
 class Added(ObjectType):

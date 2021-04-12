@@ -341,6 +341,7 @@ message WDeltas {
     optional PbWorkflow added = 2;
     optional PbWorkflow updated = 3;
     optional bool reloaded = 4;
+    repeated string pruned = 5;
 }
 
 message AllDeltas {

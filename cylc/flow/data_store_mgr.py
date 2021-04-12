@@ -257,6 +257,9 @@ def apply_delta(key, delta, data):
     if hasattr(delta, 'pruned'):
         # Prune data elements by id
         for del_id in delta.pruned:
+            if del_id == data[key].id:
+                data[key].Clear()
+                continue
             if del_id not in data[key]:
                 continue
             # remove relationships
@@ -317,7 +320,6 @@ def create_delta_store(delta=None, workflow_id=None):
         DELTA_PRUNED: {
             key: []
             for key in DATA_TEMPLATE.keys()
-            if key is not WORKFLOW
         },
     }
     if workflow_id is not None:
